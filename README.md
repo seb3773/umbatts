@@ -11,9 +11,8 @@ It is designed to work with my kdeten_light icon set (from my q4osXpack project)
 -dependencies: gtk2 ; acpi  
   
 -compile it with :   
-gcc -O2 -fstrict-aliasing -flto -ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables -fno-unwind-tables -fomit-frame-pointer -ffast-math -fvisibility=hidden -fuse-ld=gold -Wl,--gc-sections,--build-id=none,-O1 -s -o umbatts umbatts.c `pkg-config --cflags --libs gtk+-2.0` -Wno-deprecated-declarations && strip ./umbatts
-
-                                  
+make
+                         
   
 then you can run the binary : ./umbatts  
   
