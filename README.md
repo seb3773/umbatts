@@ -15,6 +15,7 @@ make
                          
   
 then you can run the binary : ./umbatts  
+If you want to use brightness control, you may have to launch it with sudo. A better way is to create a udev rules or a sudoers entry to authorize user to write in /sys/class/backlight/*/ folder.
   
 +---+
 
