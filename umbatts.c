@@ -208,30 +208,53 @@ static inline gboolean initialize_backlight(void) {
 
 
 static inline void find_battery_name(void) {
-    DIR *dir = opendir("/sys/class/power_supply/");
+    if (battery_name[0]) return;
+    const char *base_path = "/sys/class/power_supply/";
+    size_t base_len = 24;
+    DIR *dir = opendir(base_path);
     if (!dir) return;
     struct dirent *entry;
+    char type[16];
+    int fd;
+    char path[PATH_SIZE];
     while ((entry = readdir(dir))) {
         if (entry->d_name[0] == '.') continue;
-        char path[PATH_SIZE];
-        snprintf(path, sizeof(path), "/sys/class/power_supply/%s/type", entry->d_name);
-        int fd = open(path, O_RDONLY);
+        size_t name_len = 0;
+        while (entry->d_name[name_len] && name_len < (PATH_SIZE - base_len - 6)) ++name_len;
+        memcpy(path, base_path, base_len);
+        memcpy(path + base_len, entry->d_name, name_len);
+        memcpy(path + base_len + name_len, "/type", 6);
+        path[base_len + name_len + 5] = 0;
+        fd = open(path, O_RDONLY);
         if (fd >= 0) {
-            char type[16];
             ssize_t n = read(fd, type, sizeof(type) - 1);
             close(fd);
-            if (n > 0 && type[0] == 'B' && type[1] == 'a') {
-                memcpy(battery_name, entry->d_name, sizeof(battery_name));
-                snprintf(path, sizeof(path), "/sys/class/power_supply/%s/capacity", battery_name);
-                battery_fd_capacity = open(path, O_RDONLY);
-                snprintf(path, sizeof(path), "/sys/class/power_supply/%s/status", battery_name);
-                battery_fd_status = open(path, O_RDONLY);
-                break;
+            if (n > 0) {
+                type[n] = 0;
+                if (type[0] == 'B' && type[1] == 'a') {
+                    size_t copy_len = (name_len < sizeof(battery_name) - 1) ? name_len : sizeof(battery_name) - 1;
+                    memcpy(battery_name, entry->d_name, copy_len);
+                    battery_name[copy_len] = 0;
+                    break;
+                }
             }
         }
     }
     closedir(dir);
+    if (battery_name[0]) {
+        size_t name_len = 0;
+        while (battery_name[name_len] && name_len < (PATH_SIZE - base_len - 9)) ++name_len;
+        memcpy(path, base_path, base_len);
+        memcpy(path + base_len, battery_name, name_len);
+        memcpy(path + base_len + name_len, "/capacity", 9);
+        path[base_len + name_len + 9] = 0;
+        battery_fd_capacity = open(path, O_RDONLY);
+        memcpy(path + base_len + name_len, "/status", 8);
+        path[base_len + name_len + 8] = 0;
+        battery_fd_status = open(path, O_RDONLY);
+    }
 }
+
 
 
 
