@@ -1,11 +1,16 @@
 #include <gtk/gtk.h>
+#include <gdk-pixbuf/gdk-pixbuf.h>
 #include <dirent.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <stdint.h>
+#include <string.h>
+#include <stdio.h>
+
 #include "battery_icons.h"
 
 #define PATH_SIZE 128
-#define TOOLTIP_BUFFER_SIZE 32
+#define TOOLTIP_BUFFER_SIZE 64
 
 #define FAST_PARSE_INT(buf, n) ({ \
     int v = 0; \
@@ -34,17 +39,14 @@
     _ret; \
 })
 
-
-
 #define GET_BATTERY_STATUS() \
-    do { \
-        char b[8]; \
-        ssize_t n = pread(battery_fd_capacity, b, sizeof(b), 0); \
-        battery_percentage = (n > 0) ? (FAST_PARSE_INT(b, n) > 100 ? 100 : FAST_PARSE_INT(b, n)) : 0; \
-        n = pread(battery_fd_status, b, sizeof(b) - 1, 0); \
-        battery_charging = (n > 0) ? (b[0] == 'C' ? 1 : (b[0] == 'F' ? 2 : 0)) : 0; \
-    } while(0)
-
+do { \
+    char b[8]; \
+    ssize_t n = pread(battery_fd_capacity, b, sizeof(b), 0); \
+    battery_percentage = (n > 0) ? (FAST_PARSE_INT(b, n) > 100 ? 100 : FAST_PARSE_INT(b, n)) : 0; \
+    n = pread(battery_fd_status, b, sizeof(b) - 1, 0); \
+    battery_charging = (n > 0) ? (b[0] == 'C' ? 1 : (b[0] == 'F' ? 2 : 0)) : 0; \
+} while(0)
 
 static gboolean slider_active = FALSE;
 
@@ -84,6 +86,9 @@ static GdkPixbuf *battery_pixbuf_cache[11][3] = {0};
 static char battery_name[16] = {0};
 static int battery_fd_capacity = -1;
 static int battery_fd_status = -1;
+static int battery_fd_now = -1;
+static int battery_fd_full = -1;
+static int battery_fd_power = -1;
 static char backlight_directory[PATH_SIZE] = {0};
 static int backlight_max_brightness = 0;
 static int backlight_current_brightness = 0;
@@ -93,8 +98,6 @@ static uint8_t battery_charging = 0;
 static GtkStatusIcon *status_icon = NULL;
 static gboolean warn_batt = FALSE;
 static char tooltip_buffer[TOOLTIP_BUFFER_SIZE] = {0};
-
-
 
 static inline void pregen_tooltip(void) {
     GET_BATTERY_STATUS();
@@ -116,9 +119,57 @@ static inline void pregen_tooltip(void) {
     const char *state = (battery_charging == 2) ? "Full" : (battery_charging == 1) ? "Charging" : "Discharging";
     const char *s = state;
     while (*s) *p++ = *s++;
+   *p++ = '\n';
+    if (battery_fd_now >= 0 && battery_fd_power >= 0 && battery_fd_full >= 0) {
+        char buf[32];
+        ssize_t n_now = pread(battery_fd_now, buf, sizeof(buf) - 1, 0);
+        int energy_now = (n_now > 0) ? FAST_PARSE_INT(buf, n_now) : 0;
+        ssize_t n_power = pread(battery_fd_power, buf, sizeof(buf) - 1, 0);
+        int power_now = (n_power > 0) ? FAST_PARSE_INT(buf, n_power) : 0;
+        ssize_t n_full = pread(battery_fd_full, buf, sizeof(buf) - 1, 0);
+        int energy_full = (n_full > 0) ? FAST_PARSE_INT(buf, n_full) : 0;
+        int hours = 0, minutes = 0;
+    if (power_now > 0) {
+     if (battery_charging == 1) {
+        int remain = energy_full - energy_now;
+        hours = remain / power_now;
+        minutes = (remain * 60 / power_now) - (hours * 60);
+        if (hours == 0) {
+            *p++ = '0';
+        } else {
+            int h = hours, digits = 0;
+            char num[4];
+            while (h) { num[digits++] = '0' + (h % 10); h /= 10; }
+            for (int i = digits - 1; i >= 0; --i) *p++ = num[i];
+        }
+        *p++ = ':';
+        int m = minutes;
+        *p++ = '0' + (m / 10);
+        *p++ = '0' + (m % 10);
+        const char *txt = " to full";
+        while (*txt) *p++ = *txt++;
+       } else if (battery_charging == 0) {
+        hours = energy_now / power_now;
+        minutes = (energy_now * 60 / power_now) - (hours * 60);
+        if (hours == 0) {
+            *p++ = '0';
+        } else {
+            int h = hours, digits = 0;
+            char num[4];
+            while (h) { num[digits++] = '0' + (h % 10); h /= 10; }
+            for (int i = digits - 1; i >= 0; --i) *p++ = num[i];
+        }
+        *p++ = ':';
+        int m = minutes;
+        *p++ = '0' + (m / 10);
+        *p++ = '0' + (m % 10);
+        const char *txt = " remaining";
+        while (*txt) *p++ = *txt++;
+        }
+      }
+    }
     *p = '\0';
 }
-
 
 static inline void initialize_icon_lookup_table(void) {
     for (int i = 0; embedded_icon_names[i] != NULL; i++) {
@@ -205,8 +256,6 @@ static inline gboolean initialize_backlight(void) {
     return READ_CURRENT_BRIGHTNESS();
 }
 
-
-
 static inline void find_battery_name(void) {
     if (battery_name[0]) return;
     const char *base_path = "/sys/class/power_supply/";
@@ -252,11 +301,32 @@ static inline void find_battery_name(void) {
         memcpy(path + base_len + name_len, "/status", 8);
         path[base_len + name_len + 8] = 0;
         battery_fd_status = open(path, O_RDONLY);
+        memcpy(path + base_len + name_len, "/energy_now", 11);
+        path[base_len + name_len + 11] = 0;
+        battery_fd_now = open(path, O_RDONLY);
+        if (battery_fd_now < 0) {
+            memcpy(path + base_len + name_len, "/charge_now", 11);
+            path[base_len + name_len + 11] = 0;
+            battery_fd_now = open(path, O_RDONLY);
+        }
+        memcpy(path + base_len + name_len, "/energy_full", 12);
+        path[base_len + name_len + 12] = 0;
+        battery_fd_full = open(path, O_RDONLY);
+        if (battery_fd_full < 0) {
+            memcpy(path + base_len + name_len, "/charge_full", 12);
+            path[base_len + name_len + 12] = 0;
+            battery_fd_full = open(path, O_RDONLY);
+        }
+        memcpy(path + base_len + name_len, "/power_now", 10);
+        path[base_len + name_len + 10] = 0;
+        battery_fd_power = open(path, O_RDONLY);
+        if (battery_fd_power < 0) {
+            memcpy(path + base_len + name_len, "/current_now", 12);
+            path[base_len + name_len + 12] = 0;
+            battery_fd_power = open(path, O_RDONLY);
+        }
     }
 }
-
-
-
 
 
 static void show_low_battery_warning(void) {
@@ -271,7 +341,6 @@ static void show_low_battery_warning(void) {
 }
 
 
-
 static gboolean hide_popup_timeout(gpointer window) {
     if (slider_active) {
         slider_active = FALSE;
@@ -282,8 +351,6 @@ static gboolean hide_popup_timeout(gpointer window) {
     }
     return G_SOURCE_REMOVE;
 }
-
-
 
 static void slider_changed(GtkRange *range, gpointer user_data) {
     if (!backlight_directory[0] || backlight_fd_brightness < 0) return;
@@ -311,7 +378,6 @@ static void slider_changed(GtkRange *range, gpointer user_data) {
 }
 
 
-
 static void show_slider_popup(GtkStatusIcon *icon, guint button, guint activate_time, gpointer user_data) {
     GtkWidget *popup_window = gtk_window_new(GTK_WINDOW_POPUP);
     GtkWidget *vbox = gtk_vbox_new(FALSE, 2);
@@ -329,19 +395,18 @@ static void show_slider_popup(GtkStatusIcon *icon, guint button, guint activate_
         }
         gtk_box_pack_start(GTK_BOX(vbox), slider, TRUE, TRUE, 2);
     }
-    const char *info = gtk_label_get_text(GTK_LABEL(acpi_label));
-    int info_len = 0;
-    while (info[info_len]) ++info_len;
-    int popup_width = info_len * 8 + 20;
-    if (popup_width < 320) popup_width = 320;
-    gtk_widget_set_size_request(popup_window, popup_width, -1);
     gtk_widget_show_all(popup_window);
+    GtkRequisition req;
+    gtk_widget_size_request(acpi_label, &req);
+    int popup_width = req.width + 80;
+    if (popup_width > 320) popup_width = 320;
+    gtk_widget_set_size_request(popup_window, popup_width, -1);
     GdkScreen *screen = gdk_screen_get_default();
     int screen_width = gdk_screen_get_width(screen);
     int screen_height = gdk_screen_get_height(screen);
-    int y = backlight_directory[0] ? screen_height - 110 : screen_height - 60;
+    int y = backlight_directory[0] ? screen_height - 150 : screen_height - 100;
     gtk_window_move(GTK_WINDOW(popup_window), screen_width - popup_width - 10, y);
-    g_timeout_add_seconds(3, hide_popup_timeout, popup_window);
+    g_timeout_add_seconds(2, hide_popup_timeout, popup_window);
 }
 
 
@@ -363,6 +428,7 @@ static inline void update_battery_icon(void) {
 }
 
 
+
 static gboolean update_battery_status(gpointer user_data) {
     update_battery_icon();
     return G_SOURCE_CONTINUE;
@@ -372,12 +438,14 @@ static gboolean update_battery_status(gpointer user_data) {
 static void cleanup(void) {
     if (battery_fd_capacity >= 0) close(battery_fd_capacity);
     if (battery_fd_status >= 0) close(battery_fd_status);
+    if (battery_fd_now >= 0) close(battery_fd_now);
+    if (battery_fd_full >= 0) close(battery_fd_full);
+    if (battery_fd_power >= 0) close(battery_fd_power);
     if (backlight_fd_brightness >= 0) close(backlight_fd_brightness);
     for (int i = 0; i < 11; ++i)
         for (int j = 0; j < 3; ++j)
             if (battery_pixbuf_cache[i][j]) g_object_unref(battery_pixbuf_cache[i][j]);
 }
-
 
 int main(int argc, char *argv[]) {
     gtk_init(&argc, &argv);

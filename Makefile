@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -O2 -Wl,-z,norelro -Wl,-z,now -DNDEBUG -fstrict-aliasing -flto -ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables -fno-unwind-tables -fomit-frame-pointer -ffast-math -fvisibility=hidden -fuse-ld=gold -Wl,--gc-sections,--build-id=none,-O1 -s `pkg-config --cflags --libs gtk+-2.0` -Wno-deprecated-declarations
+CFLAGS = -O2 -Wl,-z,norelro -DNDEBUG -fstrict-aliasing -flto -ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables -fno-unwind-tables -fomit-frame-pointer -ffast-math -fvisibility=hidden -fuse-ld=gold -Wl,--gc-sections,--build-id=none,-O1 -s `pkg-config --cflags --libs gtk+-2.0` -Wno-deprecated-declarations
 LDFLAGS = `pkg-config --libs gtk+-2.0`
 
 ICON_PATH = ./icons
